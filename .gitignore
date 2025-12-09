@@ -1,0 +1,3 @@
+venv/
+outputs/512_chips/
+backend/__pycache__/

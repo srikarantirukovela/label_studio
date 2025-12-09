@@ -1,0 +1,257 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Auto Labeling System</title>
+
+<style>
+    body {
+        margin: 0;
+        font-family: "Segoe UI", Arial, sans-serif;
+        background: #f4f6f9;
+        color: #333;
+    }
+
+    header {
+        background: #1f2937;
+        color: #ffffff;
+        padding: 16px 40px;
+        font-size: 20px;
+        font-weight: 600;
+    }
+
+    .container {
+        max-width: 1100px;
+        margin: 40px auto;
+        padding: 20px;
+    }
+
+    .card {
+        background: #ffffff;
+        border-radius: 10px;
+        box-shadow: 0 8px 20px rgba(0,0,0,0.08);
+        padding: 30px;
+    }
+
+    h2 {
+        margin-top: 0;
+        font-size: 22px;
+    }
+
+    .controls {
+        display: flex;
+        gap: 15px;
+        align-items: center;
+        margin-bottom: 30px;
+    }
+
+    input[type="file"] {
+        flex: 1;
+        padding: 8px;
+    }
+
+    button {
+        background: #2563eb;
+        color: white;
+        border: none;
+        border-radius: 6px;
+        padding: 10px 18px;
+        cursor: pointer;
+        font-size: 14px;
+        transition: background 0.2s;
+    }
+
+    button:hover {
+        background: #1d4ed8;
+    }
+
+    button.secondary {
+        background: #10b981;
+    }
+
+    button.secondary:hover {
+        background: #059669;
+    }
+
+    /* ✅ GRID FIX */
+    .preview-grid {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 30px;
+        margin-top: 20px;
+    }
+
+    .preview-box {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+    }
+
+    .preview-box h3 {
+        margin-bottom: 10px;
+        font-size: 16px;
+        color: #444;
+    }
+
+    /* ✅ SAME SIZE IMAGE FRAME */
+    .image-frame {
+        width: 420px;
+        height: 420px;
+        border-radius: 10px;
+        border: 1px solid #ddd;
+        background: #f8fafc;
+        box-shadow: 0 4px 10px rgba(0,0,0,0.06);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+    }
+
+    .image-frame img {
+        max-width: 100%;
+        max-height: 100%;
+        object-fit: contain;
+    }
+
+    .footer {
+        text-align: center;
+        margin-top: 30px;
+        color: #666;
+        font-size: 13px;
+    }
+</style>
+</head>
+
+<body>
+
+<header>
+    Auto Labeling – AI Inference System
+</header>
+
+<div class="container">
+    <div class="card">
+
+        <h2>Upload Image for Auto Labeling</h2>
+
+        <div class="controls">
+            <input type="file" id="fileInput" accept="image/*">
+            <button onclick="upload()">Run Inference</button>
+            <button class="secondary" onclick="download()" disabled id="downloadBtn">
+                Download Mask
+            </button>
+        </div>
+
+        <div class="preview-grid">
+
+            <div class="preview-box">
+                <h3>Input Image</h3>
+                <div class="image-frame">
+                    <img id="inputPreview" alt="Input image preview">
+                </div>
+            </div>
+
+            <div class="preview-box">
+                <h3>Predicted Mask</h3>
+                <div class="image-frame">
+                    <img id="outputPreview" alt="Predicted mask preview">
+                </div>
+            </div>
+
+        </div>
+
+    </div>
+
+    <div class="footer">
+        © 2025 AI Auto-Labeling Platform
+    </div>
+</div>
+
+<script>
+let outputBlobUrl = null;
+let outputMimeType = null;  // <- store MIME type for download
+
+document.getElementById("fileInput").addEventListener("change", function () {
+    const file = this.files[0];
+    if (!file) return;
+
+    const formData = new FormData();
+    formData.append("file", file);
+
+    fetch("/preview", {
+        method: "POST",
+        body: formData
+    })
+    .then(res => res.blob())
+    .then(blob => {
+        document.getElementById("inputPreview").src = URL.createObjectURL(blob);
+    })
+    .catch(err => {
+        console.error("Preview failed", err);
+        alert("Preview failed");
+    });
+
+    // reset output
+    document.getElementById("outputPreview").src = "";
+    document.getElementById("outputPreview").alt = "";
+    document.getElementById("downloadBtn").disabled = true;
+    outputBlobUrl = null;
+    outputMimeType = null;
+});
+
+function upload() {
+    const file = document.getElementById("fileInput").files[0];
+    if (!file) {
+        alert("Please select an image first");
+        return;
+    }
+
+    const formData = new FormData();
+    formData.append("file", file);
+
+    fetch("/infer", {
+        method: "POST",
+        body: formData
+    })
+    .then(res => res.blob())
+    .then(blob => {
+    outputBlobUrl = URL.createObjectURL(blob);
+    outputMimeType = blob.type || "";
+
+    // ✅ Show preview whenever browser can render
+    document.getElementById("outputPreview").src = outputBlobUrl;
+    document.getElementById("outputPreview").alt = "";
+
+    document.getElementById("downloadBtn").disabled = false;
+})
+
+    .catch(err => {
+        alert("Inference failed");
+        console.error(err);
+    });
+}
+
+// function download() {
+//     if (!outputBlobUrl) {
+//         alert("No output to download yet.");
+//         return;
+//     }
+
+//     const link = document.createElement("a");
+//     link.href = outputBlobUrl;
+
+//     let ext = "png"; // default
+//     if (outputMimeType && outputMimeType.startsWith("image/")) {
+//         ext = outputMimeType.split("/")[1];  // e.g. "png", "jpeg", "tiff"
+//     }
+
+//     link.download = `predicted_mask.${ext}`;
+
+//     document.body.appendChild(link);
+//     link.click();
+//     document.body.removeChild(link);
+// }
+function download() {
+    window.location.href = "/download-mask";
+}
+</script>
+</body>
+</html>
