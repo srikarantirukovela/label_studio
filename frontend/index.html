@@ -118,6 +118,46 @@
         color: #666;
         font-size: 13px;
     }
+    .file-upload {
+    flex: 1;
+    border: 2px dashed #c7d2fe;
+    border-radius: 10px;
+    padding: 18px;
+    background: #f8fafc;
+    cursor: pointer;
+    text-align: center;
+    transition: all 0.2s ease;
+    /* width: 100px; */
+}
+
+.file-upload:hover {
+    border-color: #2563eb;
+    background: #eef2ff;
+}
+
+.upload-icon {
+    font-size: 28px;
+    margin-bottom: 6px;
+}
+
+.upload-text strong {
+    display: block;
+    font-size: 14px;
+    color: #1f2937;
+}
+
+.upload-text span {
+    font-size: 12px;
+    color: #6b7280;
+}
+
+.file-name {
+    margin-top: 8px;
+    font-size: 12px;
+    color: #2563eb;
+    font-weight: 500;
+}
+
 </style>
 </head>
 
@@ -132,13 +172,43 @@
 
         <h2>Upload Image for Auto Labeling</h2>
 
-        <div class="controls">
+        <!-- <div class="controls">
             <input type="file" id="fileInput" accept="image/*">
             <button onclick="upload()">Run Inference</button>
             <button class="secondary" onclick="download()" disabled id="downloadBtn">
                 Download Mask
             </button>
+            <button class="secondary" onclick="downloadShapefile()" disabled id="shpBtn">
+                Download Shapefile
+            </button>
+
+        </div> -->
+        <div class="controls">
+
+            <!-- Custom file upload -->
+            <label for="fileInput" class="file-upload">
+                <div class="upload-icon">📤</div>
+                <div class="upload-text">
+                    <strong>Choose an image</strong>
+                    <span>or drag & drop here</span>
+                </div>
+                <div id="fileName" class="file-name">No file selected</div>
+            </label>
+
+            <input type="file" id="fileInput" accept="image/*" hidden>
+
+            <button onclick="upload()">Run Inference</button>
+
+            <button class="secondary" onclick="download()" disabled id="downloadBtn">
+                Download Mask
+            </button>
+
+            <button class="secondary" onclick="downloadShapefile()" disabled id="shpBtn">
+                Download Shapefile
+            </button>
+
         </div>
+
 
         <div class="preview-grid">
 
@@ -167,15 +237,23 @@
 
 <script>
 let outputBlobUrl = null;
-let outputMimeType = null;  // <- store MIME type for download
+let outputMimeType = null;
 
+// ---------------------------
+// When user selects a new file
+// ---------------------------
+// document.getElementById("fileInput").addEventListener("change", function () {
+//     const file = this.files[0];
+//     if (!file) return;
 document.getElementById("fileInput").addEventListener("change", function () {
     const file = this.files[0];
-    if (!file) return;
+    document.getElementById("fileName").textContent =
+        file ? file.name : "No file selected";
 
     const formData = new FormData();
     formData.append("file", file);
 
+    // Load input preview
     fetch("/preview", {
         method: "POST",
         body: formData
@@ -189,14 +267,23 @@ document.getElementById("fileInput").addEventListener("change", function () {
         alert("Preview failed");
     });
 
-    // reset output
+    // ------------------------------------
+    // RESET STATE FOR NEW IMAGE SELECTION
+    // ------------------------------------
     document.getElementById("outputPreview").src = "";
     document.getElementById("outputPreview").alt = "";
+
+    // 🔒 Disable downloads until inference finishes
     document.getElementById("downloadBtn").disabled = true;
+    document.getElementById("shpBtn").disabled = true;
+
     outputBlobUrl = null;
     outputMimeType = null;
 });
 
+// ---------------------------
+// Run inference
+// ---------------------------
 function upload() {
     const file = document.getElementById("fileInput").files[0];
     if (!file) {
@@ -207,50 +294,41 @@ function upload() {
     const formData = new FormData();
     formData.append("file", file);
 
+    // Optional: show loading state
+    document.getElementById("outputPreview").alt = "Processing...";
+
     fetch("/infer", {
         method: "POST",
         body: formData
     })
     .then(res => res.blob())
     .then(blob => {
-    outputBlobUrl = URL.createObjectURL(blob);
-    outputMimeType = blob.type || "";
+        outputBlobUrl = URL.createObjectURL(blob);
+        outputMimeType = blob.type || "";
 
-    // ✅ Show preview whenever browser can render
-    document.getElementById("outputPreview").src = outputBlobUrl;
-    document.getElementById("outputPreview").alt = "";
+        // Show preview
+        document.getElementById("outputPreview").src = outputBlobUrl;
+        document.getElementById("outputPreview").alt = "";
 
-    document.getElementById("downloadBtn").disabled = false;
-})
-
+        // 🔓 Enable BOTH download buttons only now
+        document.getElementById("downloadBtn").disabled = false;
+        document.getElementById("shpBtn").disabled = false;
+    })
     .catch(err => {
         alert("Inference failed");
         console.error(err);
     });
 }
 
-// function download() {
-//     if (!outputBlobUrl) {
-//         alert("No output to download yet.");
-//         return;
-//     }
-
-//     const link = document.createElement("a");
-//     link.href = outputBlobUrl;
-
-//     let ext = "png"; // default
-//     if (outputMimeType && outputMimeType.startsWith("image/")) {
-//         ext = outputMimeType.split("/")[1];  // e.g. "png", "jpeg", "tiff"
-//     }
-
-//     link.download = `predicted_mask.${ext}`;
-
-//     document.body.appendChild(link);
-//     link.click();
-//     document.body.removeChild(link);
-// }
+// ---------------------------
+// Downloads
+// ---------------------------
 function download() {
     window.location.href = "/download-mask";
+}
+
+function downloadShapefile() {
+    window.location.href = "/download-shapefile";
 }
 </script>
 </body>

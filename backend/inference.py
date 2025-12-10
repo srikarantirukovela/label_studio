@@ -116,4 +116,3 @@ def predict_from_pil(pil_image: Image.Image) -> np.ndarray:
     logger.info(f"✅ Inference completed in {elapsed:.2f} ms")
 
     return mask
-

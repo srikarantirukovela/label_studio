@@ -8,4 +8,5 @@ pillow
 albumentations
 tqdm
 python-multipart
-gdal
+# gdal
+geopandas
