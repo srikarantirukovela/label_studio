@@ -1,335 +1,527 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
 <head>
-<meta charset="UTF-8">
-<title>Auto Labeling System</title>
-
-<style>
-    body {
-        margin: 0;
-        font-family: "Segoe UI", Arial, sans-serif;
-        background: #f4f6f9;
-        color: #333;
-    }
-
-    header {
-        background: #1f2937;
-        color: #ffffff;
-        padding: 16px 40px;
-        font-size: 20px;
-        font-weight: 600;
-    }
-
-    .container {
-        max-width: 1100px;
-        margin: 40px auto;
-        padding: 20px;
-    }
-
-    .card {
-        background: #ffffff;
-        border-radius: 10px;
-        box-shadow: 0 8px 20px rgba(0,0,0,0.08);
-        padding: 30px;
-    }
-
-    h2 {
-        margin-top: 0;
-        font-size: 22px;
-    }
-
-    .controls {
-        display: flex;
-        gap: 15px;
-        align-items: center;
-        margin-bottom: 30px;
-    }
-
-    input[type="file"] {
-        flex: 1;
-        padding: 8px;
-    }
-
-    button {
-        background: #2563eb;
-        color: white;
-        border: none;
-        border-radius: 6px;
-        padding: 10px 18px;
-        cursor: pointer;
-        font-size: 14px;
-        transition: background 0.2s;
-    }
-
-    button:hover {
-        background: #1d4ed8;
-    }
-
-    button.secondary {
-        background: #10b981;
-    }
-
-    button.secondary:hover {
-        background: #059669;
-    }
-
-    /* ✅ GRID FIX */
-    .preview-grid {
-        display: grid;
-        grid-template-columns: 1fr 1fr;
-        gap: 30px;
-        margin-top: 20px;
-    }
-
-    .preview-box {
-        display: flex;
-        flex-direction: column;
-        align-items: center;
-    }
-
-    .preview-box h3 {
-        margin-bottom: 10px;
-        font-size: 16px;
-        color: #444;
-    }
-
-    /* ✅ SAME SIZE IMAGE FRAME */
-    .image-frame {
-        width: 420px;
-        height: 420px;
-        border-radius: 10px;
-        border: 1px solid #ddd;
-        background: #f8fafc;
-        box-shadow: 0 4px 10px rgba(0,0,0,0.06);
-        display: flex;
-        align-items: center;
-        justify-content: center;
-    }
-
-    .image-frame img {
-        max-width: 100%;
-        max-height: 100%;
-        object-fit: contain;
-    }
-
-    .footer {
-        text-align: center;
-        margin-top: 30px;
-        color: #666;
-        font-size: 13px;
-    }
-    .file-upload {
-    flex: 1;
-    border: 2px dashed #c7d2fe;
-    border-radius: 10px;
-    padding: 18px;
-    background: #f8fafc;
-    cursor: pointer;
-    text-align: center;
-    transition: all 0.2s ease;
-    /* width: 100px; */
-}
-
-.file-upload:hover {
-    border-color: #2563eb;
-    background: #eef2ff;
-}
-
-.upload-icon {
-    font-size: 28px;
-    margin-bottom: 6px;
-}
-
-.upload-text strong {
-    display: block;
-    font-size: 14px;
-    color: #1f2937;
-}
-
-.upload-text span {
-    font-size: 12px;
-    color: #6b7280;
-}
-
-.file-name {
-    margin-top: 8px;
-    font-size: 12px;
-    color: #2563eb;
-    font-weight: 500;
-}
-
-</style>
+  <meta charset="utf-8" />
+  <title>Auto Labeling – AI Inference System (Editable Masks)</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <style>
+    :root { --card-bg: #fff; --muted: #6b7280; --accent: #0ea5e9; }
+    body { font-family: Inter, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial; background:#f3f4f6; padding:18px; color:#111827; }
+    header { font-size:20px; font-weight:600; margin-bottom:12px; }
+    .container { max-width:1100px; margin:0 auto; }
+    .card { background:var(--card-bg); padding:18px; border-radius:10px; box-shadow:0 6px 18px rgba(15,23,42,0.06); }
+    .controls { display:flex; gap:8px; align-items:center; margin-bottom:12px; flex-wrap:wrap; }
+    .file-upload { display:flex; gap:8px; align-items:center; background:#eef2ff; padding:8px 10px; border-radius:8px; cursor:pointer; }
+    .file-name { font-size:13px; color:var(--muted); }
+    button { background:var(--accent); color:white; border:none; padding:8px 12px; border-radius:8px; cursor:pointer; }
+    button.secondary { background:#e5e7eb; color:#111827; }
+    .preview-grid { display:flex; gap:12px; margin-top:12px; flex-wrap:wrap; }
+    .preview-box { flex:1 1 340px; min-width:280px; }
+    .image-frame { background:#11182710; border-radius:8px; padding:8px; min-height:160px; position:relative; }
+    img.preview { display:block; max-width:100%; height:auto; }
+    #canvasContainer { position:relative; width:100%; height:auto; }
+    canvas.layer { position:absolute; left:0; top:0; image-rendering:pixelated; }
+    .toolbar { margin-top:8px; display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+    .palette { display:flex; gap:8px; align-items:center; }
+    .swatch { width:28px; height:28px; border-radius:6px; cursor:pointer; border:2px solid #fff; box-shadow:0 1px 3px rgba(0,0,0,0.08); }
+    .swatch.selected { outline:3px solid rgba(14,165,233,0.25); }
+    .small { padding:6px 8px; font-size:13px; }
+    .muted { color:var(--muted); font-size:13px; }
+    .footer { margin-top:12px; color:var(--muted); font-size:13px; }
+  </style>
 </head>
-
 <body>
+  <div class="container">
+    <header>Auto Labeling – Editable Masks (Session-based)</header>
 
-<header>
-    Auto Labeling – AI Inference System
-</header>
-
-<div class="container">
     <div class="card">
+      <h2>Upload Image for Auto Labeling</h2>
 
-        <h2>Upload Image for Auto Labeling</h2>
+      <div class="controls">
+        <label for="fileInput" class="file-upload">
+          <div>📤</div>
+          <div style="margin-left:8px;">
+            <strong>Choose an image</strong><br>
+            <span class="muted">or drag & drop</span>
+          </div>
+        </label>
+        <input type="file" id="fileInput" accept="image/*" hidden>
 
-        <!-- <div class="controls">
-            <input type="file" id="fileInput" accept="image/*">
-            <button onclick="upload()">Run Inference</button>
-            <button class="secondary" onclick="download()" disabled id="downloadBtn">
-                Download Mask
-            </button>
-            <button class="secondary" onclick="downloadShapefile()" disabled id="shpBtn">
-                Download Shapefile
-            </button>
+        <button id="runBtn" onclick="upload()">Run Inference</button>
+        <button id="editBtn" class="secondary" onclick="startEditing()" disabled>Edit Mask</button>
+        <button id="saveEditsBtn" class="secondary" onclick="saveEdits()" disabled>Save Edits</button>
+        <button id="undoBtn" class="secondary" onclick="undo()" disabled>Undo</button>
+        <button id="downloadBtn" class="secondary" onclick="downloadMask()" disabled>Download Mask</button>
+        <button id="shpBtn" class="secondary" onclick="downloadShp()" disabled>Download Shapefile</button>
 
-        </div> -->
-        <div class="controls">
+        <div style="margin-left:auto;">
+          <div id="fileName" class="file-name">No file selected</div>
+        </div>
+      </div>
 
-            <!-- Custom file upload -->
-            <label for="fileInput" class="file-upload">
-                <div class="upload-icon">📤</div>
-                <div class="upload-text">
-                    <strong>Choose an image</strong>
-                    <span>or drag & drop here</span>
-                </div>
-                <div id="fileName" class="file-name">No file selected</div>
-            </label>
-
-            <input type="file" id="fileInput" accept="image/*" hidden>
-
-            <button onclick="upload()">Run Inference</button>
-
-            <button class="secondary" onclick="download()" disabled id="downloadBtn">
-                Download Mask
-            </button>
-
-            <button class="secondary" onclick="downloadShapefile()" disabled id="shpBtn">
-                Download Shapefile
-            </button>
-
+      <div class="preview-grid">
+        <div class="preview-box">
+          <h3>Input Image</h3>
+          <div class="image-frame">
+            <img id="inputPreview" class="preview" alt="Input preview">
+          </div>
         </div>
 
+        <div class="preview-box">
+          <h3>Predicted Mask (editable)</h3>
+          <div class="image-frame" id="maskFrame" style="position:relative;">
+            <img id="outputPreview" class="preview" alt="Predicted mask preview" crossorigin="anonymous">
+            <!-- canvas container will be sized to preview's natural size -->
+            <div id="canvasContainer"></div>
+          </div>
 
-        <div class="preview-grid">
-
-            <div class="preview-box">
-                <h3>Input Image</h3>
-                <div class="image-frame">
-                    <img id="inputPreview" alt="Input image preview">
-                </div>
+          <div class="toolbar">
+            <div class="palette" id="palette">
+              <!-- default two classes (background, building). User can add more -->
             </div>
 
-            <div class="preview-box">
-                <h3>Predicted Mask</h3>
-                <div class="image-frame">
-                    <img id="outputPreview" alt="Predicted mask preview">
-                </div>
-            </div>
-
+            <label class="small">Brush: <input id="brushSize" type="range" min="1" max="80" value="14"></label>
+            <label class="small"><input id="eraser" type="checkbox"> Eraser</label>
+            <label class="small muted" id="sessionInfo">Session: -</label>
+          </div>
         </div>
+      </div>
 
+      <div style="margin-top:12px;">
+        <div class="muted">Notes: edits are sent to server and stored per-session. Use Undo to step back one version. Downloads always serve the latest saved mask/shapefile for this session.</div>
+      </div>
     </div>
 
-    <div class="footer">
-        © 2025 AI Auto-Labeling Platform
-    </div>
-</div>
+    <div class="footer">© 2025 AI Auto-Labeling Platform</div>
+  </div>
 
 <script>
+/* Globals */
+let sessionId = null;
 let outputBlobUrl = null;
-let outputMimeType = null;
+let currentMaskNaturalWidth = 0;
+let currentMaskNaturalHeight = 0;
+let canvases = {};        // classId -> canvas element (layer)
+let ctxs = {};            // classId -> ctx
+let palette = [];         // [{id, name, color}]
+let activeClassId = null;
+let versionList = [];
+const canvasContainer = document.getElementById("canvasContainer");
+const outputPreview = document.getElementById("outputPreview");
+const inputPreview = document.getElementById("inputPreview");
+const fileInput = document.getElementById("fileInput");
+const fileNameElem = document.getElementById("fileName");
+const runBtn = document.getElementById("runBtn");
+const editBtn = document.getElementById("editBtn");
+const saveEditsBtn = document.getElementById("saveEditsBtn");
+const downloadBtn = document.getElementById("downloadBtn");
+const shpBtn = document.getElementById("shpBtn");
+const undoBtn = document.getElementById("undoBtn");
+const sessionInfo = document.getElementById("sessionInfo");
 
-// ---------------------------
-// When user selects a new file
-// ---------------------------
-// document.getElementById("fileInput").addEventListener("change", function () {
-//     const file = this.files[0];
-//     if (!file) return;
-document.getElementById("fileInput").addEventListener("change", function () {
-    const file = this.files[0];
-    document.getElementById("fileName").textContent =
-        file ? file.name : "No file selected";
+fileInput.addEventListener("change", async function() {
+  const f = this.files[0];
+  fileNameElem.textContent = f ? f.name : "No file selected";
+  if (!f) return;
 
-    const formData = new FormData();
-    formData.append("file", file);
+  // Preview input by posting to /preview
+  const fd = new FormData();
+  fd.append("file", f);
+  try {
+    const res = await fetch("/preview", { method: "POST", body: fd });
+    const blob = await res.blob();
+    inputPreview.src = URL.createObjectURL(blob);
+  } catch (e) {
+    alert("Preview failed");
+  }
 
-    // Load input preview
-    fetch("/preview", {
-        method: "POST",
-        body: formData
-    })
-    .then(res => res.blob())
-    .then(blob => {
-        document.getElementById("inputPreview").src = URL.createObjectURL(blob);
-    })
-    .catch(err => {
-        console.error("Preview failed", err);
-        alert("Preview failed");
-    });
-
-    // ------------------------------------
-    // RESET STATE FOR NEW IMAGE SELECTION
-    // ------------------------------------
-    document.getElementById("outputPreview").src = "";
-    document.getElementById("outputPreview").alt = "";
-
-    // 🔒 Disable downloads until inference finishes
-    document.getElementById("downloadBtn").disabled = true;
-    document.getElementById("shpBtn").disabled = true;
-
-    outputBlobUrl = null;
-    outputMimeType = null;
+  // reset state
+  outputPreview.src = "";
+  clearCanvases();
+  sessionId = null;
+  sessionInfo.textContent = "Session: -";
+  editBtn.disabled = true;
+  saveEditsBtn.disabled = true;
+  downloadBtn.disabled = true;
+  shpBtn.disabled = true;
+  undoBtn.disabled = true;
 });
 
-// ---------------------------
-// Run inference
-// ---------------------------
-function upload() {
-    const file = document.getElementById("fileInput").files[0];
-    if (!file) {
-        alert("Please select an image first");
+// Drag & drop support
+document.querySelector(".file-upload").addEventListener("dragover", (e) => { e.preventDefault(); });
+document.querySelector(".file-upload").addEventListener("drop", (e) => {
+  e.preventDefault();
+  const f = e.dataTransfer.files[0];
+  if (!f) return;
+  fileInput.files = e.dataTransfer.files;
+  const ev = new Event('change'); fileInput.dispatchEvent(ev);
+});
+
+/* Default palette (two-class) */
+function initPalette() {
+  palette = [
+    { id: 0, name: "Background", color: "#000000" },
+    { id: 1, name: "Building", color: "#ffffff" }
+  ];
+  renderPaletteUI();
+  setActiveClass(1);
+}
+
+function renderPaletteUI() {
+  const wrapper = document.getElementById("palette");
+  wrapper.innerHTML = "";
+  palette.forEach(p => {
+    const sw = document.createElement("div");
+    sw.className = "swatch";
+    sw.style.background = p.color;
+    sw.title = p.name;
+    if (p.id === activeClassId) sw.classList.add("selected");
+    sw.onclick = () => { setActiveClass(p.id); };
+    wrapper.appendChild(sw);
+  });
+}
+
+function setActiveClass(id) {
+  activeClassId = id;
+  document.querySelectorAll(".swatch").forEach((el, idx) => {
+    if (palette[idx].id === id) el.classList.add("selected"); else el.classList.remove("selected");
+  });
+  // ensure canvas exists for class
+  if (!canvases[id]) createLayerCanvas(id);
+}
+
+/* layer canvas utilities */
+function createLayerCanvas(classId) {
+  // create canvas with natural dims (we will re-size later when image loads)
+  const c = document.createElement("canvas");
+  c.className = "layer";
+  c.style.pointerEvents = "auto";
+  c.width = currentMaskNaturalWidth || 1;
+  c.height = currentMaskNaturalHeight || 1;
+  c.style.width = (outputPreview.clientWidth || 300) + "px";
+  c.style.height = (outputPreview.clientHeight || 200) + "px";
+  c.style.zIndex = 100 + classId;
+  canvasContainer.appendChild(c);
+  canvases[classId] = c;
+  ctxs[classId] = c.getContext("2d");
+  ctxs[classId].globalCompositeOperation = "source-over";
+  makeCanvasDrawable(c, classId);
+}
+
+function resizeAllCanvasesToIntrinsic() {
+  const w = outputPreview.naturalWidth;
+  const h = outputPreview.naturalHeight;
+  currentMaskNaturalWidth = w;
+  currentMaskNaturalHeight = h;
+  canvasContainer.style.width = w + "px";
+  canvasContainer.style.height = h + "px";
+  for (const id in canvases) {
+    const c = canvases[id];
+    // capture content
+    const data = c.toDataURL();
+    c.width = w;
+    c.height = h;
+    c.style.width = outputPreview.clientWidth + "px";
+    c.style.height = outputPreview.clientHeight + "px";
+    // re-draw previous content scaled (best-effort)
+    const img = new Image();
+    img.onload = () => {
+      ctxs[id].clearRect(0,0,c.width,c.height);
+      ctxs[id].drawImage(img, 0,0, c.width, c.height);
+    };
+    img.src = data;
+  }
+}
+
+/* Drawing logic per canvas */
+function makeCanvasDrawable(canvasEl, classId) {
+  const ctx = canvasEl.getContext("2d");
+  let drawing = false;
+  let lastX=0, lastY=0;
+
+  function getPosFromEvent(e) {
+    const rect = canvasEl.getBoundingClientRect();
+    const cx = (e.clientX - rect.left) * (canvasEl.width / rect.width);
+    const cy = (e.clientY - rect.top) * (canvasEl.height / rect.height);
+    return [cx, cy];
+  }
+
+  canvasEl.addEventListener("mousedown", (e) => {
+    drawing = true;
+    [lastX,lastY] = getPosFromEvent(e);
+  });
+  canvasEl.addEventListener("mousemove", (e) => {
+    if (!drawing) return;
+    const [x,y] = getPosFromEvent(e);
+    ctx.lineWidth = parseInt(document.getElementById("brushSize").value, 10);
+    ctx.lineJoin = "round"; ctx.lineCap = "round";
+    if (document.getElementById("eraser").checked) {
+      // erase means draw transparent (clear)
+      ctx.globalCompositeOperation = "destination-out";
+      ctx.strokeStyle = "rgba(0,0,0,1)";
+    } else {
+      ctx.globalCompositeOperation = "source-over";
+      // paint with class color (white for building etc.)
+      ctx.strokeStyle = palette.find(p=>p.id===classId).color || "#ffffff";
+    }
+    ctx.beginPath();
+    ctx.moveTo(lastX,lastY);
+    ctx.lineTo(x,y);
+    ctx.stroke();
+    lastX = x; lastY = y;
+  });
+  canvasEl.addEventListener("mouseup", () => drawing = false);
+  canvasEl.addEventListener("mouseout", () => drawing = false);
+
+  // Touch
+  canvasEl.addEventListener("touchstart", (e) => {
+    e.preventDefault();
+    drawing = true;
+    const t = e.touches[0];
+    const rect = canvasEl.getBoundingClientRect();
+    lastX = (t.clientX - rect.left) * (canvasEl.width / rect.width);
+    lastY = (t.clientY - rect.top) * (canvasEl.height / rect.height);
+  });
+  canvasEl.addEventListener("touchmove", (e) => {
+    e.preventDefault();
+    if (!drawing) return;
+    const t = e.touches[0];
+    const rect = canvasEl.getBoundingClientRect();
+    const x = (t.clientX - rect.left) * (canvasEl.width / rect.width);
+    const y = (t.clientY - rect.top) * (canvasEl.height / rect.height);
+    ctx.lineWidth = parseInt(document.getElementById("brushSize").value, 10);
+    ctx.lineJoin = "round"; ctx.lineCap = "round";
+    if (document.getElementById("eraser").checked) ctx.globalCompositeOperation = "destination-out";
+    else { ctx.globalCompositeOperation = "source-over"; ctx.strokeStyle = palette.find(p=>p.id===classId).color || "#ffffff"; }
+    ctx.beginPath();
+    ctx.moveTo(lastX,lastY); ctx.lineTo(x,y); ctx.stroke();
+    lastX = x; lastY = y;
+  });
+  canvasEl.addEventListener("touchend", () => { drawing = false; });
+}
+
+/* Clear layers */
+function clearCanvases() {
+  for (const id in canvases) {
+    const c = canvases[id];
+    const ctx = ctxs[id];
+    ctx.clearRect(0,0,c.width,c.height);
+    c.remove();
+  }
+  canvases = {}; ctxs = {};
+}
+
+/* Start editing: prepare layered canvases and enable UI */
+function startEditing() {
+  if (!outputPreview.src) { alert("No mask to edit"); return; }
+  // Ensure mask preview is loaded
+  if (!outputPreview.complete || outputPreview.naturalWidth === 0) {
+    outputPreview.onload = finalizeStartEditing;
+  } else finalizeStartEditing();
+}
+function finalizeStartEditing() {
+  // Prepare container
+  resizeAllCanvasesToIntrinsic();
+
+  // Build canvases for palette classes
+  // If none exist, create ones matching palette
+  palette.forEach(p => { if (!canvases[p.id]) createLayerCanvas(p.id); });
+
+  editBtn.disabled = true;
+  saveEditsBtn.disabled = false;
+  undoBtn.disabled = false;
+
+  // Make canvasContainer position: relative and place canvases in it
+  canvasContainer.style.position = "absolute";
+  canvasContainer.style.left = "0";
+  canvasContainer.style.top = "0";
+}
+
+/* Merge layered canvases into one single PNG for upload */
+function mergeLayersToImageBlob(callback) {
+  // Create an intermediate canvas with natural width/height
+  const w = currentMaskNaturalWidth || 1;
+  const h = currentMaskNaturalHeight || 1;
+  const out = document.createElement("canvas");
+  out.width = w; out.height = h;
+  const octx = out.getContext("2d");
+  // First draw the original mask as grayscale onto base
+  const base = new Image();
+  base.crossOrigin = "anonymous";
+  base.onload = () => {
+    octx.drawImage(base, 0, 0, w, h);
+    // Overlay each class layer with its color (class color used)
+    palette.forEach(p => {
+      const layer = canvases[p.id];
+      if (!layer) return;
+      // draw layer content onto octx
+      octx.drawImage(layer, 0, 0, w, h);
+    });
+    out.toBlob((blob) => { callback(blob); }, "image/png");
+  };
+  base.src = outputPreview.src;
+}
+
+/* Save edits: send merged PNG to backend for georef write + vectorization */
+async function saveEdits() {
+  if (!sessionId) { alert("No session available. Run inference first."); return; }
+  saveEditsBtn.disabled = true;
+  mergeLayersToImageBlob(async (blob) => {
+    const fd = new FormData();
+    fd.append("file", blob, "edited_mask.png");
+    try {
+      const res = await fetch(`/save-edited-mask?session_id=${sessionId}`, { method: "POST", body: fd });
+      if (!res.ok) {
+        const txt = await res.text();
+        alert("Save failed: " + txt);
+        saveEditsBtn.disabled = false;
         return;
+      }
+      const updatedBlob = await res.blob();
+      const url = URL.createObjectURL(updatedBlob);
+      outputPreview.src = url;
+
+        // Wait until new preview is loaded
+        outputPreview.onload = () => {
+            // Clear old strokes
+            clearCanvases();
+
+            // Reset canvases to match updated mask
+            resizeAllCanvasesToIntrinsic();
+
+            // Rebuild canvases for all classes
+            palette.forEach(p => createLayerCanvas(p.id));
+
+            // Enable edit mode again
+            editBtn.disabled = true;
+            saveEditsBtn.disabled = false;
+
+            downloadBtn.disabled = false;
+            shpBtn.disabled = false;
+            undoBtn.disabled = false;
+
+            fetchHistory();
+            alert("Edits saved. You can continue editing.");
+        };
+
+    } catch (err) {
+      console.error(err);
+      alert("Save failed");
+      saveEditsBtn.disabled = false;
+    }
+  });
+}
+
+/* Undo: call backend */
+async function undo() {
+  if (!sessionId) { alert("No session"); return; }
+  try {
+    const res = await fetch(`/undo?session_id=${sessionId}`, { method: "POST" });
+    if (!res.ok) {
+      const txt = await res.text();
+      alert("Undo failed: " + txt);
+      return;
+    }
+    // outputPreview.src = URL.createObjectURL(blob);
+    const blob = await res.blob();
+    outputPreview.src = URL.createObjectURL(blob);
+
+
+    outputPreview.onload = () => {
+        // Reset editable canvases
+        clearCanvases();
+        resizeAllCanvasesToIntrinsic();
+        palette.forEach(p => createLayerCanvas(p.id));
+
+        saveEditsBtn.disabled = false;
+        alert("Undo applied to the editor.");
+    };
+
+    fetchHistory();
+
+  } catch (e) { alert("Undo failed"); console.error(e); }
+}
+
+/* Downloads */
+function downloadMask() {
+  if (!sessionId) return alert("No session");
+  window.location.href = `/download-mask?session_id=${sessionId}`;
+}
+function downloadShp() {
+  if (!sessionId) return alert("No session");
+  window.location.href = `/download-shapefile?session_id=${sessionId}`;
+}
+
+/* Fetch history list */
+async function fetchHistory() {
+  if (!sessionId) return;
+  try {
+    const res = await fetch(`/history?session_id=${sessionId}`);
+    if (!res.ok) return;
+    const json = await res.json();
+    versionList = json.versions || [];
+    // enable/disable undo button depending on versions
+    undoBtn.disabled = versionList.length < 2;
+  } catch (e) { console.error(e); }
+}
+
+/* Upload & inference */
+async function upload() {
+  const f = fileInput.files[0];
+  if (!f) { alert("Select file first"); return; }
+  runBtn.disabled = true;
+  const fd = new FormData();
+  fd.append("file", f);
+  try {
+    const res = await fetch("/infer", { method: "POST", body: fd });
+    if (!res.ok) { alert("Inference failed"); runBtn.disabled = false; return; }
+    const json = await res.json();
+    // json contains session_id and preview_png_b64
+    sessionId = json.session_id;
+    sessionInfo.textContent = "Session: " + sessionId.slice(0,8);
+    // set preview image from base64
+    const b64 = json.preview_png_b64;
+    outputPreview.src = "data:image/png;base64," + b64;
+    // Save mask natural dims if provided
+    if (json.mask_width && json.mask_height) {
+      currentMaskNaturalWidth = json.mask_width;
+      currentMaskNaturalHeight = json.mask_height;
+    } else {
+      // will be set after image load
     }
 
-    const formData = new FormData();
-    formData.append("file", file);
+    // enable edit/download buttons
+    editBtn.disabled = false;
+    downloadBtn.disabled = false;
+    shpBtn.disabled = false;
+    saveEditsBtn.disabled = true; // only after entering edit mode
+    runBtn.disabled = false;
 
-    // Optional: show loading state
-    document.getElementById("outputPreview").alt = "Processing...";
+    // When mask loads, adjust canvases sizes
+    outputPreview.onload = () => {
+      if (!currentMaskNaturalWidth) {
+        currentMaskNaturalWidth = outputPreview.naturalWidth;
+        currentMaskNaturalHeight = outputPreview.naturalHeight;
+      }
+      resizeAllCanvasesToIntrinsic();
+    };
 
-    fetch("/infer", {
-        method: "POST",
-        body: formData
-    })
-    .then(res => res.blob())
-    .then(blob => {
-        outputBlobUrl = URL.createObjectURL(blob);
-        outputMimeType = blob.type || "";
+    // fetch existing history
+    fetchHistory();
 
-        // Show preview
-        document.getElementById("outputPreview").src = outputBlobUrl;
-        document.getElementById("outputPreview").alt = "";
+    // initialize palette
+    initPalette();
 
-        // 🔓 Enable BOTH download buttons only now
-        document.getElementById("downloadBtn").disabled = false;
-        document.getElementById("shpBtn").disabled = false;
-    })
-    .catch(err => {
-        alert("Inference failed");
-        console.error(err);
-    });
+    alert("Inference finished. You can edit the mask now.");
+  } catch (err) {
+    console.error(err);
+    alert("Inference failed");
+    runBtn.disabled = false;
+  }
 }
 
-// ---------------------------
-// Downloads
-// ---------------------------
-function download() {
-    window.location.href = "/download-mask";
-}
-
-function downloadShapefile() {
-    window.location.href = "/download-shapefile";
-}
+/* Initialization */
+initPalette();
 </script>
 </body>
 </html>
