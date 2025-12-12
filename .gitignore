@@ -3,3 +3,4 @@ outputs/512_chips/
 backend/__pycache__/
 resunet_a_checkpoint_epoch_500.pth
 outputs/
+backend/utils/
