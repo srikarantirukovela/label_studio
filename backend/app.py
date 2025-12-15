@@ -50,6 +50,14 @@ os.makedirs(BASE_TMP_DIR, exist_ok=True)
 SESSION_TTL = int(os.environ.get("SESSION_TTL_SECONDS", str(60 * 60 * 6)))  # 6 hours
 _sessions_lock = threading.Lock()
 
+def load_original_image(path):
+    try:
+        img = Image.open(path).convert("RGB")
+        return np.array(img)
+    except:
+        logger.exception("Failed loading original for overlay")
+        return None
+
 def make_session_dir(session_id: str) -> str:
     path = os.path.join(BASE_TMP_DIR, f"session_{session_id}")
     os.makedirs(path, exist_ok=True)
@@ -163,6 +171,7 @@ async def infer_image(file: UploadFile = File(...)):
     src_path = os.path.join(session_dir, f"original{suffix}")
     _save_blob_to_path(contents, src_path)
 
+    # Read georeference if available
     src_meta = {}
     try:
         import rasterio
@@ -174,52 +183,63 @@ async def infer_image(file: UploadFile = File(...)):
         with open(os.path.join(session_dir, "meta.json"), "w") as mf:
             json.dump({k: str(v) for k, v in src_meta.items()}, mf)
     except Exception:
-        logger.info("Could not read georef metadata for uploaded image (ok for non-georef inputs)")
+        logger.info("No georef in uploaded image")
 
+    # Run inference
     try:
         from inference import predict_from_pil
         pil_img = Image.open(io.BytesIO(contents))
-        mask = predict_from_pil(pil_img)
+        mask, overlay = predict_from_pil(pil_img)
     except Exception as e:
         logger.exception("Inference failed")
         raise HTTPException(status_code=500, detail=f"Inference failed: {e}")
 
+    # Encode overlay
+    try:
+        _, overlay_buf = cv2.imencode(".png", overlay)
+        overlay_png_bytes = overlay_buf.tobytes()
+    except Exception:
+        logger.exception("Overlay encoding failed, using mask as preview")
+        overlay_png_bytes = cv2.imencode(".png", mask)[1].tobytes()
+
+    # Encode mask
+    mask_png_bytes = cv2.imencode(".png", mask)[1].tobytes()
+
+    # Save georeferenced mask
     mask_suffix = suffix
     mask_path = os.path.join(session_dir, f"mask{mask_suffix}")
-    try:
-        # Write to temp file first, then move
-        tmp_mask = mask_path + ".tmp"
-        try:
-            write_mask_with_same_georef(src_path, mask, tmp_mask)
-            _atomic_replace_with_fsync(tmp_mask, mask_path)
-            logger.info("Wrote initial mask to %s", mask_path)
-        except Exception:
-            logger.exception("write_mask_with_same_georef failed on initial infer; saving as PNG fallback")
-            _, png = cv2.imencode(".png", mask)
-            tmp_mask = os.path.join(session_dir, "mask.png.tmp")
-            with open(tmp_mask, "wb") as f:
-                f.write(png.tobytes())
-            _atomic_replace_with_fsync(tmp_mask, os.path.join(session_dir, "mask.png"))
-            mask_path = os.path.join(session_dir, "mask.png")
-    except Exception:
-        logger.exception("Failed to persist initial mask")
-        raise
 
-    shp_zip_path = os.path.join(session_dir, f"vector.zip")
+    try:
+        tmp_mask_path = mask_path + ".tmp"
+        write_mask_with_same_georef(src_path, mask, tmp_mask_path)
+        _atomic_replace_with_fsync(tmp_mask_path, mask_path)
+    except Exception:
+        logger.exception("Georef mask write failed, using PNG fallback")
+        tmp_png = os.path.join(session_dir, "mask.png.tmp")
+        with open(tmp_png, "wb") as f:
+            f.write(mask_png_bytes)
+            f.flush()
+            os.fsync(f.fileno())
+        dest_png = os.path.join(session_dir, "mask.png")
+        _atomic_replace_with_fsync(tmp_png, dest_png)
+        mask_path = dest_png
+
+    # Vectorize mask
+    shp_zip_path = os.path.join(session_dir, "vector.zip")
     try:
         raster_mask_to_shapefile_zip(mask_path, shp_zip_path)
     except Exception:
-        logger.exception("Vectorization failed; continue without shapefile")
-        if os.path.exists(shp_zip_path):
-            os.remove(shp_zip_path)
+        logger.exception("Vectorization failed")
+        shp_zip_path = None
 
+    # Save version history v0001
     hist_dir = os.path.join(session_dir, "history")
     os.makedirs(hist_dir, exist_ok=True)
-    v_path = os.path.join(hist_dir, f"v0001_mask.png")
-    _, png = cv2.imencode(".png", mask)
+    v_path = os.path.join(hist_dir, "v0001_mask.png")
     with open(v_path, "wb") as vf:
-        vf.write(png.tobytes())
+        vf.write(mask_png_bytes)
 
+    # Write state.json
     state = {
         "session_id": session_id,
         "created_at": now_ts(),
@@ -227,20 +247,25 @@ async def infer_image(file: UploadFile = File(...)):
         "original_path": src_path,
         "mask_path": mask_path,
         "mask_suffix": mask_suffix,
-        "shp_zip": shp_zip_path if os.path.exists(shp_zip_path) else None,
+        "shp_zip": shp_zip_path if shp_zip_path and os.path.exists(shp_zip_path) else None,
         "last_version": "v0001_mask.png"
     }
     with open(os.path.join(session_dir, "state.json"), "w") as sf:
         json.dump(state, sf)
 
+    # Encode final preview
     import base64
-    preview_b64 = base64.b64encode(_encode_png_preview(mask)).decode("ascii")
+    overlay_b64 = base64.b64encode(overlay_png_bytes).decode("ascii")
+    mask_b64 = base64.b64encode(mask_png_bytes).decode("ascii")
+
     return JSONResponse({
         "session_id": session_id,
-        "preview_png_b64": preview_b64,
+        "overlay_png_b64": overlay_b64,
+        "mask_png_b64": mask_b64,   # <<<<<< IMPORTANT FIX
         "mask_width": mask.shape[1],
         "mask_height": mask.shape[0],
     })
+
 
 
 @app.post("/save-edited-mask")
@@ -341,8 +366,40 @@ async def save_edited_mask(session_id: str = Query(...), file: UploadFile = File
         json.dump(state, sf)
     logger.info("State updated for session %s: mask=%s shp=%s version=%s", session_id, final_mask_path, shp_zip_path, vname)
 
-    preview_png = _encode_png_preview(bin_mask)
-    return Response(content=preview_png, media_type="image/png")
+    # preview_png = _encode_png_preview(bin_mask)
+    # return Response(content=preview_png, media_type="image/png")
+    try:
+        original_np = load_original_image(original_path)
+        # create overlay only if original available
+        if original_np is not None:
+            from inference import create_overlay
+            overlay = create_overlay(original_np, bin_mask)
+            _, overlay_buf = cv2.imencode(".png", overlay)
+            overlay_bytes = overlay_buf.tobytes()
+        else:
+            # fallback: create simple RGB preview from binary
+            _, overlay_buf = cv2.imencode(".png", bin_mask)
+            overlay_bytes = overlay_buf.tobytes()
+    except Exception:
+        logger.exception("Failed to build overlay for response; returning mask-only preview")
+        _, overlay_buf = cv2.imencode(".png", bin_mask)
+        overlay_bytes = overlay_buf.tobytes()
+
+    # Binary mask PNG bytes
+    _, mask_png_buf = cv2.imencode(".png", bin_mask)
+    mask_png_bytes = mask_png_buf.tobytes()
+
+    import base64
+    resp = {
+        "mask_png_b64": base64.b64encode(mask_png_bytes).decode("ascii"),
+        "overlay_png_b64": base64.b64encode(overlay_bytes).decode("ascii"),
+        "mask_width": bin_mask.shape[1],
+        "mask_height": bin_mask.shape[0],
+        "last_version": vname
+    }
+    return JSONResponse(resp)
+
+
 
 
 @app.get("/download-mask")
@@ -485,9 +542,36 @@ def undo(session_id: str = Query(...)):
     with open(state_path, "w") as sf:
         json.dump(state, sf)
 
-    # STEP 5 — Return preview PNG so frontend sees undo immediately
-    preview_png = _encode_png_preview(bin_mask)
-    return Response(content=preview_png, media_type="image/png")
+    try:
+        original_np = load_original_image(original_path)
+        if original_np is not None:
+            from inference import create_overlay
+            overlay = create_overlay(original_np, bin_mask)
+            _, overlay_buf = cv2.imencode(".png", overlay)
+            overlay_bytes = overlay_buf.tobytes()
+        else:
+            _, overlay_buf = cv2.imencode(".png", bin_mask)
+            overlay_bytes = overlay_buf.tobytes()
+    except Exception:
+        logger.exception("Failed to build overlay for undo response; returning mask-only")
+        _, overlay_buf = cv2.imencode(".png", bin_mask)
+        overlay_bytes = overlay_buf.tobytes()
+
+    _, mask_png_buf = cv2.imencode(".png", bin_mask)
+    mask_png_bytes = mask_png_buf.tobytes()
+
+    import base64
+    resp = {
+        "mask_png_b64": base64.b64encode(mask_png_bytes).decode("ascii"),
+        "overlay_png_b64": base64.b64encode(overlay_bytes).decode("ascii"),
+        "mask_width": bin_mask.shape[1],
+        "mask_height": bin_mask.shape[0],
+        "last_version": prev
+    }
+    return JSONResponse(resp)
+
+
+
 
 
 frontend_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "frontend"))
@@ -495,119 +579,3 @@ if os.path.exists(frontend_dir):
     app.mount("/ui", StaticFiles(directory=frontend_dir, html=True), name="ui")
 else:
     logger.info("Frontend directory not found at %s — not mounting /ui", frontend_dir)
-
-
-
-
-
-
-
-
-
-
-
-
-# from fastapi import FastAPI, File, UploadFile
-# from fastapi.responses import Response,FileResponse
-# from fastapi.middleware.cors import CORSMiddleware
-# from fastapi.staticfiles import StaticFiles
-# from PIL import Image
-# import tempfile
-# import os
-# from utils.georef import write_mask_with_same_georef
-# from inference import predict_from_pil
-# from mask_to_vector import raster_mask_to_shapefile_zip
-# from logger import logger
-
-# import rasterio
-# import io
-# import cv2
-
-# app = FastAPI(title="Auto Label Backend")
-
-# # ✅ CORS (safe for local)
-# app.add_middleware(
-#     CORSMiddleware,
-#     allow_origins=["*"],
-#     allow_methods=["*"],
-#     allow_headers=["*"],
-# )
-
-# LAST_MASK_PATH = None
-# LAST_MASK_SUFFIX = None
-# LAST_SHAPE_ZIP = None
-# LAST_ORIGINAL_NAME = None
-
-
-# @app.post("/preview")
-# async def preview_image(file: UploadFile = File(...)):
-#     """Return PNG preview for any image (TIFF included)"""
-#     image = Image.open(io.BytesIO(await file.read())).convert("RGB")
-#     buf = io.BytesIO()
-#     image.save(buf, format="PNG")
-#     return Response(content=buf.getvalue(), media_type="image/png")
-
-# @app.post("/infer")
-# async def infer_image(file: UploadFile = File(...)):
-#     global LAST_MASK_PATH, LAST_MASK_SUFFIX, LAST_SHAPE_ZIP, LAST_ORIGINAL_NAME
-
-#     contents = await file.read()
-#     suffix = os.path.splitext(file.filename)[1].lower()
-#     original_name = os.path.splitext(file.filename)[0]   # e.g., "building_23"
-#     LAST_ORIGINAL_NAME = original_name
-
-#     with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as src_tmp:
-#         src_tmp.write(contents)
-#         src_path = src_tmp.name
-
-#     pil_img = Image.open(io.BytesIO(contents))
-#     mask = predict_from_pil(pil_img)
-
-#     out_mask_path = src_path.replace(suffix, f"_mask{suffix}")
-
-#     try:
-#         # ✅ Preserve georef
-#         write_mask_with_same_georef(src_path, mask, out_mask_path)
-
-#         # ✅ Convert to shapefile
-#         shp_zip_path = out_mask_path.replace(suffix, "_vector.zip")
-#         raster_mask_to_shapefile_zip(out_mask_path, shp_zip_path)
-
-#         LAST_MASK_PATH = out_mask_path
-#         LAST_MASK_SUFFIX = suffix
-#         LAST_SHAPE_ZIP = shp_zip_path
-
-#         # ✅ Return preview PNG
-#         _, png = cv2.imencode(".png", mask)
-#         return Response(png.tobytes(), media_type="image/png")
-
-#     finally:
-#         os.remove(src_path)
-
-
-
-# @app.get("/download-mask")
-# def download_mask():
-#     if not LAST_MASK_PATH or not os.path.exists(LAST_MASK_PATH):
-#         return Response("No mask available", status_code=404)
-
-#     return FileResponse(
-#         LAST_MASK_PATH,
-#         filename=f"{LAST_ORIGINAL_NAME}_mask{LAST_MASK_SUFFIX}"
-#     )
-
-# @app.get("/download-shapefile")
-# def download_shapefile():
-#     if not LAST_SHAPE_ZIP or not os.path.exists(LAST_SHAPE_ZIP):
-#         return Response("No shapefile available", status_code=404)
-
-#     return FileResponse(
-#         LAST_SHAPE_ZIP,
-#         filename=f"{LAST_ORIGINAL_NAME}_shapefile.zip"
-#     )
-
-
-
-
-# # ✅ Frontend (mount AFTER routes, and NOT at "/")
-# app.mount("/ui", StaticFiles(directory="../frontend", html=True), name="ui")

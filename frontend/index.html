@@ -2,8 +2,10 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <title>Auto Labeling – AI Inference System (Editable Masks)</title>
+  <title>Auto Labeling – Editable Masks (Fixed)</title>
   <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css" />
+  <link rel="stylesheet" href="https://unpkg.com/leaflet-draw/dist/leaflet.draw.css"/>
   <style>
     :root { --card-bg: #fff; --muted: #6b7280; --accent: #0ea5e9; }
     body { font-family: Inter, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial; background:#f3f4f6; padding:18px; color:#111827; }
@@ -17,9 +19,11 @@
     button.secondary { background:#e5e7eb; color:#111827; }
     .preview-grid { display:flex; gap:12px; margin-top:12px; flex-wrap:wrap; }
     .preview-box { flex:1 1 340px; min-width:280px; }
-    .image-frame { background:#11182710; border-radius:8px; padding:8px; min-height:160px; position:relative; }
+    .image-frame { background:#11182710; border-radius:8px; padding:8px; min-height:160px; position:relative; overflow:hidden; }
     img.preview { display:block; max-width:100%; height:auto; }
-    #canvasContainer { position:relative; width:100%; height:auto; }
+    /* the Leaflet map will be sized by JS to mask pixel size */
+    #map { position:relative; border-radius:6px; }
+    #canvasContainer { position: absolute; left:0; top:0; pointer-events: none; } /* pointer-events toggled in JS */
     canvas.layer { position:absolute; left:0; top:0; image-rendering:pixelated; }
     .toolbar { margin-top:8px; display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
     .palette { display:flex; gap:8px; align-items:center; }
@@ -28,6 +32,7 @@
     .small { padding:6px 8px; font-size:13px; }
     .muted { color:var(--muted); font-size:13px; }
     .footer { margin-top:12px; color:var(--muted); font-size:13px; }
+    .leaflet-container { background: transparent; } /* keep default white removed */
   </style>
 </head>
 <body>
@@ -70,18 +75,20 @@
         <div class="preview-box">
           <h3>Predicted Mask (editable)</h3>
           <div class="image-frame" id="maskFrame" style="position:relative;">
-            <img id="outputPreview" class="preview" alt="Predicted mask preview" crossorigin="anonymous">
-            <!-- canvas container will be sized to preview's natural size -->
+            <!-- Map and canvases are created & sized by JS -->
+            <div id="map"></div>
+            <!-- we keep a hidden image element for measurement if needed -->
+            <img id="outputPreview" style="display:none;" />
             <div id="canvasContainer"></div>
           </div>
 
           <div class="toolbar">
-            <div class="palette" id="palette">
-              <!-- default two classes (background, building). User can add more -->
-            </div>
+            <div class="palette" id="palette"></div>
 
             <label class="small">Brush: <input id="brushSize" type="range" min="1" max="80" value="14"></label>
             <label class="small"><input id="eraser" type="checkbox"> Eraser</label>
+
+            <label class="small"><input id="brushMode" type="checkbox"> Brush Mode</label>
             <label class="small muted" id="sessionInfo">Session: -</label>
           </div>
         </div>
@@ -95,10 +102,11 @@
     <div class="footer">© 2025 AI Auto-Labeling Platform</div>
   </div>
 
+<script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
+<script src="https://unpkg.com/leaflet-draw/dist/leaflet.draw.js"></script>
 <script>
-/* Globals */
+/* ========= Globals ========= */
 let sessionId = null;
-let outputBlobUrl = null;
 let currentMaskNaturalWidth = 0;
 let currentMaskNaturalHeight = 0;
 let canvases = {};        // classId -> canvas element (layer)
@@ -106,6 +114,7 @@ let ctxs = {};            // classId -> ctx
 let palette = [];         // [{id, name, color}]
 let activeClassId = null;
 let versionList = [];
+
 const canvasContainer = document.getElementById("canvasContainer");
 const outputPreview = document.getElementById("outputPreview");
 const inputPreview = document.getElementById("inputPreview");
@@ -118,50 +127,20 @@ const downloadBtn = document.getElementById("downloadBtn");
 const shpBtn = document.getElementById("shpBtn");
 const undoBtn = document.getElementById("undoBtn");
 const sessionInfo = document.getElementById("sessionInfo");
+const brushModeCheckbox = document.getElementById("brushMode");
+const brushSizeInput = document.getElementById("brushSize");
+const eraserCheckbox = document.getElementById("eraser");
 
-fileInput.addEventListener("change", async function() {
-  const f = this.files[0];
-  fileNameElem.textContent = f ? f.name : "No file selected";
-  if (!f) return;
+let map = null;
+let imageLayer = null;
+let drawControl = null;
+let drawnItems = new L.FeatureGroup();
 
-  // Preview input by posting to /preview
-  const fd = new FormData();
-  fd.append("file", f);
-  try {
-    const res = await fetch("/preview", { method: "POST", body: fd });
-    const blob = await res.blob();
-    inputPreview.src = URL.createObjectURL(blob);
-  } catch (e) {
-    alert("Preview failed");
-  }
-
-  // reset state
-  outputPreview.src = "";
-  clearCanvases();
-  sessionId = null;
-  sessionInfo.textContent = "Session: -";
-  editBtn.disabled = true;
-  saveEditsBtn.disabled = true;
-  downloadBtn.disabled = true;
-  shpBtn.disabled = true;
-  undoBtn.disabled = true;
-});
-
-// Drag & drop support
-document.querySelector(".file-upload").addEventListener("dragover", (e) => { e.preventDefault(); });
-document.querySelector(".file-upload").addEventListener("drop", (e) => {
-  e.preventDefault();
-  const f = e.dataTransfer.files[0];
-  if (!f) return;
-  fileInput.files = e.dataTransfer.files;
-  const ev = new Event('change'); fileInput.dispatchEvent(ev);
-});
-
-/* Default palette (two-class) */
+/* ========== Utility & palette ========== */
 function initPalette() {
   palette = [
     { id: 0, name: "Background", color: "#000000" },
-    { id: 1, name: "Building", color: "#ffffff" }
+    { id: 1, name: "Building", color: "#00ff00" } // use visible color for preview
   ];
   renderPaletteUI();
   setActiveClass(1);
@@ -186,58 +165,78 @@ function setActiveClass(id) {
   document.querySelectorAll(".swatch").forEach((el, idx) => {
     if (palette[idx].id === id) el.classList.add("selected"); else el.classList.remove("selected");
   });
-  // ensure canvas exists for class
-  if (!canvases[id]) createLayerCanvas(id);
+  if (id !== null && !canvases[id]) createLayerCanvas(id);
 }
 
-/* layer canvas utilities */
+/* ========== Canvas creation/resizing ========== */
+/* Always size canvases to true mask pixel dims (1:1). Do not use clientWidth scaling. */
 function createLayerCanvas(classId) {
-  // create canvas with natural dims (we will re-size later when image loads)
+  const w = currentMaskNaturalWidth || 1;
+  const h = currentMaskNaturalHeight || 1;
+
   const c = document.createElement("canvas");
   c.className = "layer";
-  c.style.pointerEvents = "auto";
-  c.width = currentMaskNaturalWidth || 1;
-  c.height = currentMaskNaturalHeight || 1;
-  c.style.width = (outputPreview.clientWidth || 300) + "px";
-  c.style.height = (outputPreview.clientHeight || 200) + "px";
+  c.width = w;
+  c.height = h;
+  // set CSS size so overlay pane renders same pixel dims
+  c.style.width = w + "px";
+  c.style.height = h + "px";
+  c.style.pointerEvents = "none"; // pointer controlled by brushMode toggle
   c.style.zIndex = 100 + classId;
   canvasContainer.appendChild(c);
+
   canvases[classId] = c;
   ctxs[classId] = c.getContext("2d");
   ctxs[classId].globalCompositeOperation = "source-over";
+
+  // attach drawing handlers (enable only when brushMode)
   makeCanvasDrawable(c, classId);
 }
 
 function resizeAllCanvasesToIntrinsic() {
-  const w = outputPreview.naturalWidth;
-  const h = outputPreview.naturalHeight;
-  currentMaskNaturalWidth = w;
-  currentMaskNaturalHeight = h;
-  canvasContainer.style.width = w + "px";
-  canvasContainer.style.height = h + "px";
+  const w = currentMaskNaturalWidth;
+  const h = currentMaskNaturalHeight;
+  if (!w || !h) return;
+
+  // size map container (map div) to exact pixel size
+  const mapEl = document.getElementById("map");
+  mapEl.style.width = w + "px";
+  mapEl.style.height = h + "px";
+
+  // ensure Leaflet recalculates layout
+  if (map) setTimeout(() => map.invalidateSize(true), 40);
+
+  // adjust canvas DOM and backing pixel buffer
   for (const id in canvases) {
     const c = canvases[id];
-    // capture content
-    const data = c.toDataURL();
+    const ctx = ctxs[id];
+
+    // keep existing drawing by scaling previous data onto new canvas
+    const prevDataUrl = c.toDataURL();
     c.width = w;
     c.height = h;
-    c.style.width = outputPreview.clientWidth + "px";
-    c.style.height = outputPreview.clientHeight + "px";
-    // re-draw previous content scaled (best-effort)
+    c.style.width = w + "px";
+    c.style.height = h + "px";
+
     const img = new Image();
     img.onload = () => {
-      ctxs[id].clearRect(0,0,c.width,c.height);
-      ctxs[id].drawImage(img, 0,0, c.width, c.height);
+      ctx.clearRect(0, 0, c.width, c.height);
+      // draw previous content scaled to new size
+      ctx.drawImage(img, 0, 0, c.width, c.height);
     };
-    img.src = data;
+    img.src = prevDataUrl;
   }
+
+  // set canvasContainer to overlay pane size
+  canvasContainer.style.width = w + "px";
+  canvasContainer.style.height = h + "px";
 }
 
-/* Drawing logic per canvas */
+/* ========== Brush drawing on canvas ========== */
 function makeCanvasDrawable(canvasEl, classId) {
   const ctx = canvasEl.getContext("2d");
   let drawing = false;
-  let lastX=0, lastY=0;
+  let lastX = 0, lastY = 0;
 
   function getPosFromEvent(e) {
     const rect = canvasEl.getBoundingClientRect();
@@ -246,203 +245,375 @@ function makeCanvasDrawable(canvasEl, classId) {
     return [cx, cy];
   }
 
-  canvasEl.addEventListener("mousedown", (e) => {
+  canvasEl.addEventListener("mousedown", e => {
+    if (!brushModeCheckbox.checked) return; // ignore when not in brush mode
+    canvasEl.style.cursor = 'crosshair';
     drawing = true;
-    [lastX,lastY] = getPosFromEvent(e);
+    [lastX, lastY] = getPosFromEvent(e);
   });
-  canvasEl.addEventListener("mousemove", (e) => {
+  window.addEventListener("mousemove", e => {
     if (!drawing) return;
-    const [x,y] = getPosFromEvent(e);
-    ctx.lineWidth = parseInt(document.getElementById("brushSize").value, 10);
+    const [x, y] = getPosFromEvent(e);
+    ctx.lineWidth = parseInt(brushSizeInput.value, 10);
     ctx.lineJoin = "round"; ctx.lineCap = "round";
-    if (document.getElementById("eraser").checked) {
-      // erase means draw transparent (clear)
+    if (eraserCheckbox.checked) {
       ctx.globalCompositeOperation = "destination-out";
       ctx.strokeStyle = "rgba(0,0,0,1)";
     } else {
       ctx.globalCompositeOperation = "source-over";
-      // paint with class color (white for building etc.)
-      ctx.strokeStyle = palette.find(p=>p.id===classId).color || "#ffffff";
+      ctx.strokeStyle = palette.find(p => p.id === classId)?.color || "#ffffff";
     }
     ctx.beginPath();
-    ctx.moveTo(lastX,lastY);
-    ctx.lineTo(x,y);
+    ctx.moveTo(lastX, lastY);
+    ctx.lineTo(x, y);
     ctx.stroke();
     lastX = x; lastY = y;
   });
-  canvasEl.addEventListener("mouseup", () => drawing = false);
-  canvasEl.addEventListener("mouseout", () => drawing = false);
+  window.addEventListener("mouseup", () => {
+    drawing = false;
+  });
 
-  // Touch
-  canvasEl.addEventListener("touchstart", (e) => {
+  // Touch support
+  canvasEl.addEventListener("touchstart", e => {
+    if (!brushModeCheckbox.checked) return;
     e.preventDefault();
     drawing = true;
     const t = e.touches[0];
     const rect = canvasEl.getBoundingClientRect();
     lastX = (t.clientX - rect.left) * (canvasEl.width / rect.width);
     lastY = (t.clientY - rect.top) * (canvasEl.height / rect.height);
-  });
-  canvasEl.addEventListener("touchmove", (e) => {
-    e.preventDefault();
+  }, { passive: false });
+  canvasEl.addEventListener("touchmove", e => {
     if (!drawing) return;
+    e.preventDefault();
     const t = e.touches[0];
     const rect = canvasEl.getBoundingClientRect();
     const x = (t.clientX - rect.left) * (canvasEl.width / rect.width);
     const y = (t.clientY - rect.top) * (canvasEl.height / rect.height);
-    ctx.lineWidth = parseInt(document.getElementById("brushSize").value, 10);
+    ctx.lineWidth = parseInt(brushSizeInput.value, 10);
     ctx.lineJoin = "round"; ctx.lineCap = "round";
-    if (document.getElementById("eraser").checked) ctx.globalCompositeOperation = "destination-out";
-    else { ctx.globalCompositeOperation = "source-over"; ctx.strokeStyle = palette.find(p=>p.id===classId).color || "#ffffff"; }
+    if (eraserCheckbox.checked) ctx.globalCompositeOperation = "destination-out";
+    else { ctx.globalCompositeOperation = "source-over"; ctx.strokeStyle = palette.find(p => p.id === classId)?.color || "#ffffff"; }
     ctx.beginPath();
-    ctx.moveTo(lastX,lastY); ctx.lineTo(x,y); ctx.stroke();
+    ctx.moveTo(lastX, lastY); ctx.lineTo(x, y); ctx.stroke();
     lastX = x; lastY = y;
-  });
+  }, { passive: false });
   canvasEl.addEventListener("touchend", () => { drawing = false; });
 }
 
-/* Clear layers */
-function clearCanvases() {
-  for (const id in canvases) {
-    const c = canvases[id];
-    const ctx = ctxs[id];
-    ctx.clearRect(0,0,c.width,c.height);
-    c.remove();
+/* ========== Leaflet integration ========== */
+
+function initLeafletViewer(imgUrl, w, h) {
+  console.log("initLeafletViewer:", w, h);
+
+  // clear old map if exists
+  if (map) {
+    // remove canvasContainer from previous overlayPane (if present)
+    try {
+      const oldPane = map.getPanes().overlayPane;
+      if (oldPane && oldPane.contains(canvasContainer)) oldPane.removeChild(canvasContainer);
+    } catch (e) {}
+    map.remove();
+    map = null;
   }
-  canvases = {}; ctxs = {};
-}
 
-/* Start editing: prepare layered canvases and enable UI */
-function startEditing() {
-  if (!outputPreview.src) { alert("No mask to edit"); return; }
-  // Ensure mask preview is loaded
-  if (!outputPreview.complete || outputPreview.naturalWidth === 0) {
-    outputPreview.onload = finalizeStartEditing;
-  } else finalizeStartEditing();
-}
-function finalizeStartEditing() {
-  // Prepare container
-  resizeAllCanvasesToIntrinsic();
+  // set map container to pixel size of mask (ensures 1:1 coordinate system)
+  const mapEl = document.getElementById("map");
+  mapEl.style.width = w + "px";
+  mapEl.style.height = h + "px";
 
-  // Build canvases for palette classes
-  // If none exist, create ones matching palette
-  palette.forEach(p => { if (!canvases[p.id]) createLayerCanvas(p.id); });
+  // create map
+  map = L.map("map", {
+    crs: L.CRS.Simple,
+    minZoom: -5,
+    maxZoom: 5,
+    zoomControl: true
+  });
 
-  editBtn.disabled = true;
-  saveEditsBtn.disabled = false;
-  undoBtn.disabled = false;
+  // create/reset drawnItems
+  drawnItems = new L.FeatureGroup();
+  map.addLayer(drawnItems);
 
-  // Make canvasContainer position: relative and place canvases in it
+  // bounds: top-left [0,0] bottom-right [h,w] (pixel coordinates)
+  const bounds = [[0, 0], [h, w]];
+
+  // image overlay
+  imageLayer = L.imageOverlay(imgUrl, bounds).addTo(map);
+  map.fitBounds(bounds);
+
+  // create draw control (polygons & rectangles)
+  drawControl = new L.Control.Draw({
+    draw: {
+      polyline: false,
+      circle: false,
+      rectangle: true,
+      circlemarker: false,
+      marker: false,
+      polygon: {
+        allowIntersection: false,
+        showArea: false
+      }
+    },
+    edit: {
+      featureGroup: drawnItems,
+      remove: true
+    }
+  });
+  map.addControl(drawControl);
+
+  // ensure canvasContainer sits inside overlayPane so it moves with map
+  const overlayPane = map.getPanes().overlayPane;
+  if (!overlayPane.contains(canvasContainer)) {
+    overlayPane.appendChild(canvasContainer);
+  }
+
+  // ensure canvasContainer matches overlay pixel size/style
   canvasContainer.style.position = "absolute";
-  canvasContainer.style.left = "0";
-  canvasContainer.style.top = "0";
+  canvasContainer.style.left = "0px";
+  canvasContainer.style.top = "0px";
+  canvasContainer.style.width = w + "px";
+  canvasContainer.style.height = h + "px";
+
+  // default: brushMode false => let Leaflet draw receive events
+  setBrushMode(brushModeCheckbox.checked);
+
+  // map draw events
+  map.on(L.Draw.Event.CREATED, (e) => {
+    const layer = e.layer;
+    drawnItems.addLayer(layer);
+    console.log("Leaflet: created shape", layer);
+  });
+
+  map.on(L.Draw.Event.EDITED, () => console.log("Leaflet: EDITED"));
+  map.on(L.Draw.Event.DELETED, () => console.log("Leaflet: DELETED"));
+
+  // small delay to ensure Leaflet layout is correct
+  setTimeout(() => map.invalidateSize(true), 30);
 }
 
-/* Merge layered canvases into one single PNG for upload */
+/* Enable or disable brush mode.
+   - brushOn = true -> enable pointer on canvases, hide draw toolbar
+   - brushOn = false -> disable pointer on canvases, show draw toolbar
+*/
+function setBrushMode(brushOn) {
+  if (!canvasContainer) return;
+  if (brushOn) {
+    // enable drawing on canvases
+    canvasContainer.style.pointerEvents = "auto";
+    for (const id in canvases) canvases[id].style.pointerEvents = "auto";
+    // hide leaflet-draw toolbar so user doesn't accidentally use it
+    const drawToolbar = document.querySelector('.leaflet-draw-toolbar');
+    if (drawToolbar) drawToolbar.style.display = 'none';
+    console.log("Brush mode enabled");
+  } else {
+    // disable canvas pointer events so map receives mouse events
+    canvasContainer.style.pointerEvents = "none";
+    for (const id in canvases) canvases[id].style.pointerEvents = "none";
+    const drawToolbar = document.querySelector('.leaflet-draw-toolbar');
+    if (drawToolbar) drawToolbar.style.display = '';
+    console.log("Brush mode disabled (leaflet draw active)");
+  }
+}
+
+/* ========== Rasterize Leaflet shapes to canvas context ========== */
+function rasterizeLeafletShapesToCanvas(targetCtx, width, height) {
+  console.log("Rasterizing leaflet shapes… count:", drawnItems.getLayers().length);
+  drawnItems.eachLayer(layer => {
+    // rectangle and polygon both support getLatLngs()
+    if (!layer.getLatLngs) return;
+    const latlngGroups = layer.getLatLngs();
+
+    // latlngGroups may be nested (polygons) - handle first ring for common cases
+    // support outer ring only (no holes) for simplicity
+    const rings = Array.isArray(latlngGroups[0]) ? latlngGroups : [latlngGroups];
+
+    rings.forEach(ring => {
+      if (!Array.isArray(ring)) return;
+      targetCtx.beginPath();
+      ring.forEach((ll, idx) => {
+        // convert latlng to layer point (pixel coords relative to map container)
+        const pt = map.latLngToLayerPoint(ll);
+        // map.latLngToLayerPoint returns a point with x/y in pixels relative to map origin
+        const x = pt.x;
+        const y = pt.y;
+        if (idx === 0) targetCtx.moveTo(x, y);
+        else targetCtx.lineTo(x, y);
+      });
+      targetCtx.closePath();
+      targetCtx.globalCompositeOperation = "source-over";
+      targetCtx.fillStyle = "#ffffff";
+      targetCtx.fill();
+    });
+  });
+}
+
+/* ========== Merge layers and send to backend ========== */
 function mergeLayersToImageBlob(callback) {
-  // Create an intermediate canvas with natural width/height
-  const w = currentMaskNaturalWidth || 1;
-  const h = currentMaskNaturalHeight || 1;
+  console.log("MERGE STARTED — maskURL:", currentMaskURL);
+
+  const w = currentMaskNaturalWidth;
+  const h = currentMaskNaturalHeight;
+
+  if (!w || !h) {
+    alert("Mask dimensions unknown");
+    callback(null);
+    return;
+  }
+
   const out = document.createElement("canvas");
-  out.width = w; out.height = h;
+  out.width = w;
+  out.height = h;
   const octx = out.getContext("2d");
-  // First draw the original mask as grayscale onto base
-  const base = new Image();
-  base.crossOrigin = "anonymous";
-  base.onload = () => {
-    octx.drawImage(base, 0, 0, w, h);
-    // Overlay each class layer with its color (class color used)
+
+  const rawMask = new Image();
+  rawMask.onload = () => {
+    console.log("Raw mask loaded for merge.");
+
+    // 1. draw backend mask (true binary)
+    octx.clearRect(0, 0, w, h);
+    octx.drawImage(rawMask, 0, 0, w, h);
+
+    // 2. draw brush canvases (class layers)
     palette.forEach(p => {
       const layer = canvases[p.id];
-      if (!layer) return;
-      // draw layer content onto octx
-      octx.drawImage(layer, 0, 0, w, h);
+      if (layer) octx.drawImage(layer, 0, 0, w, h);
     });
-    out.toBlob((blob) => { callback(blob); }, "image/png");
+
+    // 3. rasterize Leaflet shapes (polygons/rects)
+    console.log("Rasterizing polygons into merge canvas...");
+    rasterizeLeafletShapesToCanvas(octx, w, h);
+
+    // 4. force pure binary mask 0/255 based on red channel
+    const imgData = octx.getImageData(0, 0, w, h);
+    const px = imgData.data;
+    for (let i = 0; i < px.length; i += 4) {
+      const v = px[i] > 127 ? 255 : 0;
+      px[i] = px[i+1] = px[i+2] = v;
+      px[i+3] = 255;
+    }
+    octx.putImageData(imgData, 0, 0);
+
+    out.toBlob(blob => {
+      console.log("Merge complete — blob size:", blob ? blob.size : 'NULL');
+      callback(blob);
+    }, "image/png");
   };
-  base.src = outputPreview.src;
+
+  rawMask.onerror = () => {
+    console.error("ERROR: rawMask failed to load", rawMask.src);
+    callback(null);
+  };
+
+  rawMask.src = currentMaskURL;
 }
 
-/* Save edits: send merged PNG to backend for georef write + vectorization */
+/* ========== Save edits ========== */
 async function saveEdits() {
   if (!sessionId) { alert("No session available. Run inference first."); return; }
+
   saveEditsBtn.disabled = true;
+  console.log("SAVE EDITS CLICKED. Merging...");
+
   mergeLayersToImageBlob(async (blob) => {
+    if (!blob) {
+      alert("Merge failed (no blob)");
+      saveEditsBtn.disabled = false;
+      return;
+    }
+    if (blob.size === 0) {
+      alert("Merge failed (empty blob)");
+      saveEditsBtn.disabled = false;
+      return;
+    }
+
     const fd = new FormData();
     fd.append("file", blob, "edited_mask.png");
+
     try {
+      console.log("Uploading edited mask…");
       const res = await fetch(`/save-edited-mask?session_id=${sessionId}`, { method: "POST", body: fd });
+      console.log("Backend response:", res.status);
+
       if (!res.ok) {
-        const txt = await res.text();
-        alert("Save failed: " + txt);
+        console.error("Backend error:", await res.text());
+        alert("Save failed: " + res.status);
         saveEditsBtn.disabled = false;
         return;
       }
-      const updatedBlob = await res.blob();
-      const url = URL.createObjectURL(updatedBlob);
-      outputPreview.src = url;
 
-        // Wait until new preview is loaded
-        outputPreview.onload = () => {
-            // Clear old strokes
-            clearCanvases();
+      const json = await res.json();
+      console.log("Save success. New version:", json.last_version);
 
-            // Reset canvases to match updated mask
-            resizeAllCanvasesToIntrinsic();
+      // update current mask URL (binary) and overlay preview
+      currentMaskURL = "data:image/png;base64," + json.mask_png_b64;
+      const overlayURL = "data:image/png;base64," + json.overlay_png_b64;
 
-            // Rebuild canvases for all classes
-            palette.forEach(p => createLayerCanvas(p.id));
+      // update mask natural dims if backend returned them
+      if (json.mask_width && json.mask_height) {
+        currentMaskNaturalWidth = json.mask_width;
+        currentMaskNaturalHeight = json.mask_height;
+      }
 
-            // Enable edit mode again
-            editBtn.disabled = true;
-            saveEditsBtn.disabled = false;
+      outputPreview.src = overlayURL;
 
-            downloadBtn.disabled = false;
-            shpBtn.disabled = false;
-            undoBtn.disabled = false;
-
-            fetchHistory();
-            alert("Edits saved. You can continue editing.");
-        };
+      // re-init leaflet viewer with updated overlay (keeps drawn shapes cleared)
+      outputPreview.onload = () => {
+        initLeafletViewer(overlayURL, currentMaskNaturalWidth, currentMaskNaturalHeight);
+        // clear drawing layers and recreate fresh canvases
+        clearCanvases();
+        resizeAllCanvasesToIntrinsic();
+        palette.forEach(p => createLayerCanvas(p.id));
+        editBtn.disabled = true;
+        saveEditsBtn.disabled = false;
+        downloadBtn.disabled = false;
+        shpBtn.disabled = false;
+        undoBtn.disabled = false;
+        fetchHistory();
+        console.log("Edits saved and editor refreshed.");
+      };
 
     } catch (err) {
-      console.error(err);
-      alert("Save failed");
+      console.error("SAVE ERROR:", err);
+      alert("Save failed: " + err);
       saveEditsBtn.disabled = false;
     }
   });
 }
 
-/* Undo: call backend */
+/* ========== Undo ========== */
 async function undo() {
-  if (!sessionId) { alert("No session"); return; }
+  if (!sessionId) { alert("No session available"); return; }
+
   try {
     const res = await fetch(`/undo?session_id=${sessionId}`, { method: "POST" });
-    if (!res.ok) {
-      const txt = await res.text();
-      alert("Undo failed: " + txt);
-      return;
-    }
-    // outputPreview.src = URL.createObjectURL(blob);
-    const blob = await res.blob();
-    outputPreview.src = URL.createObjectURL(blob);
+    if (!res.ok) { alert("Undo failed: " + await res.text()); return; }
+    const json = await res.json();
+    console.log("Undo response:", json);
 
+    currentMaskURL = "data:image/png;base64," + json.mask_png_b64;
+    const overlayURL = "data:image/png;base64," + json.overlay_png_b64;
+    if (json.mask_width && json.mask_height) {
+      currentMaskNaturalWidth = json.mask_width;
+      currentMaskNaturalHeight = json.mask_height;
+    }
+    outputPreview.src = overlayURL;
 
     outputPreview.onload = () => {
-        // Reset editable canvases
-        clearCanvases();
-        resizeAllCanvasesToIntrinsic();
-        palette.forEach(p => createLayerCanvas(p.id));
-
-        saveEditsBtn.disabled = false;
-        alert("Undo applied to the editor.");
+      initLeafletViewer(overlayURL, currentMaskNaturalWidth, currentMaskNaturalHeight);
+      clearCanvases();
+      resizeAllCanvasesToIntrinsic();
+      palette.forEach(p => createLayerCanvas(p.id));
+      saveEditsBtn.disabled = false;
+      fetchHistory();
+      console.log("Undo applied.");
     };
-
-    fetchHistory();
-
-  } catch (e) { alert("Undo failed"); console.error(e); }
+  } catch (e) {
+    console.error(e);
+    alert("Undo failed");
+  }
 }
 
-/* Downloads */
+/* ========== Downloads & history ========== */
 function downloadMask() {
   if (!sessionId) return alert("No session");
   window.location.href = `/download-mask?session_id=${sessionId}`;
@@ -451,8 +622,6 @@ function downloadShp() {
   if (!sessionId) return alert("No session");
   window.location.href = `/download-shapefile?session_id=${sessionId}`;
 }
-
-/* Fetch history list */
 async function fetchHistory() {
   if (!sessionId) return;
   try {
@@ -460,12 +629,13 @@ async function fetchHistory() {
     if (!res.ok) return;
     const json = await res.json();
     versionList = json.versions || [];
-    // enable/disable undo button depending on versions
     undoBtn.disabled = versionList.length < 2;
   } catch (e) { console.error(e); }
 }
 
-/* Upload & inference */
+/* ========== Upload & inference ========== */
+let currentMaskURL = null; // must point to the TRUE binary mask used for merges
+
 async function upload() {
   const f = fileInput.files[0];
   if (!f) { alert("Select file first"); return; }
@@ -473,46 +643,54 @@ async function upload() {
   const fd = new FormData();
   fd.append("file", f);
   try {
+    console.log("Sending /infer");
     const res = await fetch("/infer", { method: "POST", body: fd });
     if (!res.ok) { alert("Inference failed"); runBtn.disabled = false; return; }
     const json = await res.json();
-    // json contains session_id and preview_png_b64
+    console.log("Infer response:", json);
+
     sessionId = json.session_id;
     sessionInfo.textContent = "Session: " + sessionId.slice(0,8);
-    // set preview image from base64
-    const b64 = json.preview_png_b64;
-    outputPreview.src = "data:image/png;base64," + b64;
-    // Save mask natural dims if provided
+
+    // overlay preview (what user sees)
+    const overlayURL = "data:image/png;base64," + json.overlay_png_b64;
+    outputPreview.src = overlayURL;
+
+    // store true binary mask for merges
+    currentMaskURL = "data:image/png;base64," + json.mask_png_b64;
+
+    // mask dims
     if (json.mask_width && json.mask_height) {
       currentMaskNaturalWidth = json.mask_width;
       currentMaskNaturalHeight = json.mask_height;
     } else {
-      // will be set after image load
+      // fallback: wait for outputPreview load and set from naturalWidth/Height
+      outputPreview.onload = () => {
+        currentMaskNaturalWidth = currentMaskNaturalWidth || outputPreview.naturalWidth;
+        currentMaskNaturalHeight = currentMaskNaturalHeight || outputPreview.naturalHeight;
+      };
     }
 
-    // enable edit/download buttons
-    editBtn.disabled = false;
-    downloadBtn.disabled = false;
-    shpBtn.disabled = false;
-    saveEditsBtn.disabled = true; // only after entering edit mode
-    runBtn.disabled = false;
-
-    // When mask loads, adjust canvases sizes
+    // init viewer with overlay and dims
     outputPreview.onload = () => {
+      // ensure dims are set
       if (!currentMaskNaturalWidth) {
         currentMaskNaturalWidth = outputPreview.naturalWidth;
         currentMaskNaturalHeight = outputPreview.naturalHeight;
       }
+      initLeafletViewer(overlayURL, currentMaskNaturalWidth, currentMaskNaturalHeight);
+      // create canvases for palette
       resizeAllCanvasesToIntrinsic();
+      initPalette();
+      palette.forEach(p => createLayerCanvas(p.id));
+      editBtn.disabled = false;
+      saveEditsBtn.disabled = true;
+      downloadBtn.disabled = false;
+      shpBtn.disabled = false;
+      runBtn.disabled = false;
+      fetchHistory();
+      alert("Inference finished. You can edit the mask now.");
     };
-
-    // fetch existing history
-    fetchHistory();
-
-    // initialize palette
-    initPalette();
-
-    alert("Inference finished. You can edit the mask now.");
   } catch (err) {
     console.error(err);
     alert("Inference failed");
@@ -520,7 +698,75 @@ async function upload() {
   }
 }
 
-/* Initialization */
+/* ========== Helpers ========== */
+function clearCanvases() {
+  for (const id in canvases) {
+    const c = canvases[id];
+    const ctx = ctxs[id];
+    if (ctx) ctx.clearRect(0, 0, c.width, c.height);
+    try { c.remove(); } catch (e) {}
+  }
+  canvases = {}; ctxs = {};
+}
+
+/* ========== UI wiring ========== */
+fileInput.addEventListener("change", function() {
+  const f = this.files[0];
+  fileNameElem.textContent = f ? f.name : "No file selected";
+  if (!f) return;
+
+  // preview (client-side) using /preview endpoint (existing server)
+  const fd = new FormData();
+  fd.append("file", f);
+  fetch("/preview", { method: "POST", body: fd })
+    .then(r => r.blob())
+    .then(blob => { inputPreview.src = URL.createObjectURL(blob); })
+    .catch(() => alert("Preview failed"));
+
+  // reset state
+  outputPreview.src = "";
+  clearCanvases();
+  sessionId = null;
+  sessionInfo.textContent = "Session: -";
+  editBtn.disabled = true;
+  saveEditsBtn.disabled = true;
+  downloadBtn.disabled = true;
+  shpBtn.disabled = true;
+  undoBtn.disabled = true;
+});
+
+document.querySelector(".file-upload").addEventListener("dragover", e => e.preventDefault());
+document.querySelector(".file-upload").addEventListener("drop", e => {
+  e.preventDefault();
+  const f = e.dataTransfer.files[0];
+  if (!f) return;
+  fileInput.files = e.dataTransfer.files;
+  fileInput.dispatchEvent(new Event('change'));
+});
+
+function startEditing() {
+  if (!outputPreview.src) { alert("No mask to edit"); return; }
+  // insure dims set
+  if (!currentMaskNaturalWidth || !currentMaskNaturalHeight) {
+    alert("Mask dims not known yet");
+    return;
+  }
+  // show user the brush mode toggle (already present)
+  // make canvases overlay the map
+  resizeAllCanvasesToIntrinsic();
+  editBtn.disabled = true;
+  saveEditsBtn.disabled = false;
+  undoBtn.disabled = false;
+  // ensure brush mode state applied
+  setBrushMode(brushModeCheckbox.checked);
+}
+
+// brush mode checkbox toggles pointer handling & draw toolbar
+brushModeCheckbox.addEventListener("change", (e) => {
+  setBrushMode(e.target.checked);
+});
+
+// initialization
 initPalette();
 </script>
 </body>
